@@ -403,6 +403,64 @@ describe('session-start hook', () => {
   });
 });
 
+describe('transcript turn boundaries', () => {
+  const { getEntriesSinceLastCapture, groupEntriesIntoTurns } = require('../plugin/hooks/lib/transcript.js');
+  const user = (uuid, content) => ({ type: 'user', uuid, message: { content } });
+  const assistant = (uuid, content) => ({ type: 'assistant', uuid, message: { content } });
+  const opening = user('opening', 'Remember: the release date is 20 October; read the notes to confirm.');
+  const toolUse = assistant('tool-use', [{ type: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: 'notes.md' } }]);
+  const toolResult = user('tool-result', [{ type: 'tool_result', tool_use_id: 'read-1', content: 'Release date: 20 October.' }]);
+  const reply = assistant('reply', [{ type: 'text', text: 'Confirmed: the notes say the release date is 20 October.' }]);
+  const exchange = [opening, toolUse, toolResult, reply];
+
+  test('tool results and metadata stay in the same user turn across tool cycles', () => {
+    const entries = [opening, toolUse, toolResult, { ...user('meta', 'Internal context'), isMeta: true }, toolUse, toolResult, reply];
+    assert.deepEqual(groupEntriesIntoTurns(entries).map((turn) => turn.allEntries), [entries]);
+    assert.deepEqual(getEntriesSinceLastCapture(entries, null), entries);
+  });
+
+  test('first capture keeps only the latest real user exchange without backfilling history', () => {
+    const history = [user('old-user', 'Old prompt'), assistant('old-reply', [{ type: 'text', text: 'Old reply' }])];
+    assert.deepEqual(getEntriesSinceLastCapture([...history, ...exchange], null), exchange);
+    const next = user('next', [{ type: 'tool_result', tool_use_id: 'read-1', content: 'Done' }, { type: 'text', text: 'A new request' }]);
+    assert.deepEqual(getEntriesSinceLastCapture([...exchange, next, reply], null), [next, reply]);
+  });
+
+  test('existing capture cursors continue to select the exact transcript delta', () => {
+    assert.deepEqual(getEntriesSinceLastCapture(exchange, 'tool-use'), [toolResult, reply]);
+    assert.deepEqual(getEntriesSinceLastCapture(exchange, 'reply'), []);
+    assert.deepEqual(getEntriesSinceLastCapture([opening, reply], null), [opening, reply]);
+  });
+
+  test('first regular and signal captures retain the prompt with flushed or pending final replies', (t) => {
+    const home = makeTempDir(t, 'first-tool-capture');
+    const transcript = join(home, 'session.jsonl');
+    const modulePath = join(HOOKS_DIR, 'lib', 'transcript.js');
+    const script = `
+      const { formatNewEntries, formatSignalEntries } = require(${JSON.stringify(modulePath)});
+      console.log(JSON.stringify([formatNewEntries, formatSignalEntries].map((format) =>
+        format(process.argv[1], 'fresh-session', process.argv[2], process.argv[3]))));
+    `;
+    for (const flushed of [false, true]) {
+      const entries = [user('old-user', 'Old prompt'), reply, ...(flushed ? exchange : exchange.slice(0, -1))];
+      writeFileSync(transcript, entries.map((entry) => JSON.stringify(entry)).join('\n'));
+      const result = spawnSync('node', ['-e', script, transcript, home, reply.message.content[0].text], {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      for (const delta of JSON.parse(result.stdout)) {
+        assert.ok(delta);
+        assert.match(delta.formatted, /Remember: the release date/);
+        assert.match(delta.formatted, /Confirmed: the notes/);
+        assert.doesNotMatch(delta.formatted, /Old prompt|assistant:tool/);
+        assert.equal(delta.lastUuid, flushed ? 'reply' : 'tool-result');
+        assert.equal(delta.pendingReplies.length, flushed ? 0 : 1);
+      }
+    }
+  });
+});
+
 describe('capture hook', () => {
   test('saves the transcript delta with scope metadata and entity context', async (t) => {
     const { repo, home } = makeRepo(t);
