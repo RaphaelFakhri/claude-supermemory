@@ -1,4 +1,4 @@
-// Generated from supermemoryai/mono packages/agent-config @ fe74be45a. Do not edit; run npm run build:agent-config.
+// Generated from supermemoryai/mono packages/agent-config @ 760d32086. Do not edit; run npm run build:agent-config.
 "use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -401,7 +401,8 @@ function describePluginLogin(agent, home) {
     path,
     kind: "none",
     orgs: [],
-    unattributed: false
+    unattributed: false,
+    routes: false
   };
   if (!stored) return login;
   if (typeof stored.apiKey === "string" && stored.apiKey) {
@@ -419,7 +420,8 @@ function describePluginLogin(agent, home) {
     ...login,
     kind: "oauth",
     orgs: listOAuthOrgs(upgraded.store),
-    unattributed: upgraded.droppedTokens
+    unattributed: upgraded.droppedTokens,
+    routes: !upgraded.migrated
   };
 }
 function writeJsonAtomic(path, data, mode) {
@@ -644,15 +646,21 @@ function routeOrganization(options) {
       return useOrg(org, step, "team", marker.path, marker.organization);
     }
     trace.push({ step, outcome: "no-key", detail: marker.organization });
-    if (marker.ifMissingKey === "pause") {
+    const byName = findHeldKey(marker.organization, held);
+    if (byName) {
+      warnings.push(
+        `${marker.path} names organization "${marker.organization}" by name. Team files must use the organization id (${byName.orgId}), so it is ignored.`
+      );
+    } else if (marker.ifMissingKey === "pause") {
       warnings.push(
         `This repository's memories belong to organization ${marker.organization}, and you are not logged in to it. Memory is paused here. Run \`${hint}\`.`
       );
       return done(marker.organization, "team", marker.path, true);
+    } else {
+      notices.push(
+        `This repository belongs to organization ${marker.organization}. You are not logged in to it, so your default organization is used. If you are a member, run \`${hint}\`.`
+      );
     }
-    notices.push(
-      `This repository belongs to organization ${marker.organization}. You are not logged in to it, so your default organization is used. If you are a member, run \`${hint}\`.`
-    );
   }
   const fromPathRules = tryRules(ruleTiers([TIER_PATH]));
   if (fromPathRules) return fromPathRules;

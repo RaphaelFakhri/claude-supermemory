@@ -229,7 +229,13 @@ For an explicit login, run: node "${path.join(__dirname, 'lib/auth.js')}" login
 Or set the SUPERMEMORY_CC_API_KEY environment variable.
 </supermemory-status>`,
           [
-            authErr.code === 'ORG_PAUSED' ? `${MARK} ${authErr.message}` : null,
+            // A paused directory stays paused when its login fails or times
+            // out; say why, not just that login failed.
+            authErr.code === 'ORG_PAUSED'
+              ? `${MARK} ${authErr.message}`
+              : error.code === 'ORG_PAUSED'
+                ? `${MARK} ${error.message}`
+                : null,
             captureFailureNotice()?.systemMessage,
           ],
         );

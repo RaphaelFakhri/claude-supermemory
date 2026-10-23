@@ -1300,3 +1300,50 @@ describe('oauth organizations: session start', () => {
     assert.equal(stub.requests.length, 0);
   });
 });
+
+describe('oauth organizations: failed login while paused', () => {
+  test('a paused repo whose login fails still says why it is paused', async (t) => {
+    const { repo, home } = makeRepo(t);
+    // Discovery returns nothing useful, so the login fails before any browser opens.
+    const stub = await startStubServer(t, (record, res) => res.end('{}'));
+    const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const personal = `${encode({})}.${encode({ organization_id: 'org_personal' })}.sig`;
+    mkdirSync(join(home, '.supermemory-claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory-claude', 'credentials.json'),
+      JSON.stringify({
+        type: 'oauth',
+        version: 2,
+        apiBaseUrl: stub.url,
+        issuer: `${stub.url}/api/auth`,
+        resource: `${stub.url}/mcp`,
+        clientId: 'client_claude',
+        defaultOrganization: 'org_personal',
+        organizations: {
+          org_personal: { accessToken: personal, refreshToken: 'rt_p', expiresAt: Date.now() + 3_600_000 },
+        },
+      }),
+    );
+    mkdirSync(join(home, '.supermemory'), { recursive: true });
+    writeFileSync(
+      join(home, '.supermemory', 'config.json'),
+      JSON.stringify({ projects: [{ match: { repo: 'github.com/acme/*' }, organization: 'org_company' }] }),
+    );
+
+    const { code, stdout } = await runHook(
+      'session-start.js',
+      { session_id: 'sess-paused-fail', cwd: repo },
+      {
+        HOME: home,
+        USERPROFILE: home,
+        SUPERMEMORY_API_URL: stub.url,
+        SUPERMEMORY_MCP_URL: `${stub.url}/mcp`,
+        SUPERMEMORY_CC_API_KEY: '',
+      },
+    );
+    assert.equal(code, 0);
+    const output = JSON.parse(stdout);
+    assert.match(plain(output.systemMessage), /org_company/);
+    assert.match(plain(output.systemMessage), /paused/);
+  });
+});
